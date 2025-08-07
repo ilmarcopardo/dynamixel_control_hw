@@ -350,7 +350,42 @@ namespace dynamixel {
                 ROS_WARN_STREAM("Did not receive any data when reading "
                     << _dynamixel_map[_servos[i]->id()] << "'s velocity");
             }
+
+            dynamixel::StatusPacket<Protocol> status_current;
+            try {
+                // Send the instruction to read the "Present Current" register
+                _dynamixel_controller.send(_servos[i]->get_present_current());
+                _dynamixel_controller.recv(status_current);
+            }
+            catch (dynamixel::errors::Error& e) {
+                ROS_ERROR_STREAM("Caught a Dynamixel exception while getting "
+                    << _dynamixel_map[_servos[i]->id()] << "'s current\n"
+                    << e.msg());
+            }
+
+            if (status_current.valid()) {
+                try {
+                    // The library has a helper function to parse the raw value
+                    int16_t raw_current = _servos[i]->parse_present_current(status_current);
+
+                    // Conversion factor: 2.69mA per unit for both XM and XL series
+                    const double CURRENT_CONVERSION_FACTOR = 0.00269; 
+                    
+                    // Convert to Amps and store in the ros_control variable
+                    _joint_efforts[i] = static_cast<double>(raw_current) * CURRENT_CONVERSION_FACTOR;
+                }
+                catch (dynamixel::errors::Error& e) {
+                    ROS_ERROR_STREAM("Unpack exception while getting "
+                        << _dynamixel_map[_servos[i]->id()] << "'s current\n"
+                        << e.msg());
+                }
+            }
+            else {
+                ROS_WARN_STREAM("Did not receive any data when reading "
+                    << _dynamixel_map[_servos[i]->id()] << "'s current");
+            }
         }
+
     }
 
     template <class Protocol>
