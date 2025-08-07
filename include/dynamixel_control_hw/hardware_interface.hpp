@@ -365,24 +365,27 @@ namespace dynamixel {
 
             if (status_current.valid()) {
                 try {
-                    // The library has a helper function to parse the raw value
-                    int16_t raw_current = _servos[i]->parse_present_current(status_current);
-
-                    // Conversion factor: 2.69mA per unit for both XM and XL series
-                    const double CURRENT_CONVERSION_FACTOR = 0.00269; 
+                    int16_t raw_current;
+                    // Handle protocol differences
+                    if (Protocol::protocol_version == 2.0) {
+                        raw_current = static_cast<int16_t>(_servos[i]->parse_present_current(status_current));
+                    } else {
+                        // Protocol 1.0 uses unsigned value
+                        uint16_t unsigned_current = _servos[i]->parse_present_current(status_current);
+                        raw_current = static_cast<int16_t>(unsigned_current);
+                    }
                     
-                    // Convert to Amps and store in the ros_control variable
-                    _joint_efforts[i] = static_cast<double>(raw_current) * CURRENT_CONVERSION_FACTOR;
+                    const double CURRENT_CONVERSION_FACTOR = 0.00269;
+                    _joint_efforts[i] = raw_current * CURRENT_CONVERSION_FACTOR;
                 }
-                catch (dynamixel::errors::Error& e) {
-                    ROS_ERROR_STREAM("Unpack exception while getting "
-                        << _dynamixel_map[_servos[i]->id()] << "'s current\n"
-                        << e.msg());
+            } catch (dynamixel::errors::Error& e) {
+                if (e.error_code() == dynamixel::errors::UNSUPPORTED_INSTRUCTION) {
+                    ROS_WARN_STREAM("Current reading not supported for " 
+                                    << _dynamixel_map[_servos[i]->id()]);
+                } else {
+                    ROS_ERROR_STREAM("Dynamixel error: " << e.msg());
                 }
             }
-            else {
-                ROS_WARN_STREAM("Did not receive any data when reading "
-                    << _dynamixel_map[_servos[i]->id()] << "'s current");
             }
         }
 
