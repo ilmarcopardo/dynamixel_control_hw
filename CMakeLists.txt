@@ -64,3 +64,9 @@ install(TARGETS dynamixel_hw
 install(FILES dynamixel_plugins.xml
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
 )
+
+install(TARGETS
+  dynamixel_control_p1
+  dynamixel_control_p2
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
