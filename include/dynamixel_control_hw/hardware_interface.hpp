@@ -22,6 +22,9 @@
 #include <joint_limits_interface/joint_limits_rosparam.h>
 #include <joint_limits_interface/joint_limits_urdf.h>
 
+#include <transmission_interface/transmission_info.h>
+#include <transmission_interface/transmission_parser.h>
+
 // Library for access to the dynamixels
 #include <dynamixel/dynamixel.hpp>
 
@@ -122,12 +125,15 @@ namespace dynamixel {
         std::unordered_map<id_t, double> _dynamixel_max_speed;
         // Map for angle offsets (ID: correction in radians)
         std::unordered_map<id_t, double> _dynamixel_corrections;
+        
+        std::unordered_map<id_t, double> _mechanical_reductions;
 
         // To get joint limits from the parameter server
         ros::NodeHandle _nh;
 
         // URDF model of the robot, for joint limits
         std::shared_ptr<urdf::Model> _urdf_model;
+        std::string _urdf_string;
     };
 
     template <class Protocol>
@@ -157,6 +163,16 @@ namespace dynamixel {
         if (!_get_ros_parameters(root_nh, robot_hw_nh) || !_find_servos())
             return false;
 
+        std::vector<transmission_interface::TransmissionInfo> transmissions;
+        if (!_urdf_string.empty())
+        {
+            transmission_interface::TransmissionParser parser;
+            if (!parser.parse(_urdf_string, transmissions))
+            {
+                ROS_WARN("Could not parse transmissions from URDF");
+            }
+        }
+
         // declare all available actuators to the control manager, provided a
         // name has been given for them
         // also enable the torque output on the actuators (sort of power up)
@@ -168,6 +184,24 @@ namespace dynamixel {
                 typename std::unordered_map<id_t, std::string>::iterator dynamixel_iterator
                     = _dynamixel_map.find(id);
                 if (dynamixel_iterator != _dynamixel_map.end()) {
+                    _mechanical_reductions[id] = 1.0;
+                   
+                   // Find transmission for this joint
+                   for (size_t j = 0; j < transmissions.size(); j)
+                   {
+                       if (transmissions[j].joints_.front().name_ == dynamixel_iterator->second)
+                       {
+                           if (transmissions[j].actuators_.empty()) {
+                               ROS_WARN_STREAM("Transmission " << transmissions[j].name_ << " has no actuators, cannot get mechanical reduction.");
+                               continue;
+                           }
+                           _mechanical_reductions[id] = transmissions[j].actuators_.front().mechanical_reduction_;
+                           ROS_INFO_STREAM("Found mechanical reduction " << _mechanical_reductions[id] << " for joint " << dynamixel_iterator->second);
+                           break; // Stop after finding the first match
+                       }
+                   }
+
+
                     // tell ros_control the in-memory addresses where to read the
                     // information on joint angle, velocity and effort
                     hardware_interface::JointStateHandle state_handle(
@@ -302,6 +336,7 @@ namespace dynamixel {
                     if (dynamixel_corrections_iterator != _dynamixel_corrections.end()) {
                         _joint_angles[i] -= dynamixel_corrections_iterator->second;
                     }
+                    _joint_angles[i] /= _mechanical_reductions[_servos[i]->id()];
                 }
                 catch (dynamixel::errors::Error& e) {
                     ROS_ERROR_STREAM("Unpack exception while getting "
@@ -336,6 +371,7 @@ namespace dynamixel {
                     if (invert_iterator != _invert.end()
                         && invert_iterator->second)
                         _joint_velocities[i] = -_joint_velocities[i];
+                    _joint_velocities[i] /= _mechanical_reductions[_servos[i]->id()];
                 }
                 catch (dynamixel::errors::Error& e) {
                     ROS_ERROR_STREAM("Unpack exception while getting "
@@ -409,6 +445,7 @@ namespace dynamixel {
                 dynamixel::StatusPacket<Protocol> status;
 
                 double command = _joint_commands[i];
+                command *= _mechanical_reductions[_servos[i]->id()];
 
                 OperatingMode mode = _c_mode_map[_servos[i]->id()];
                 if (OperatingMode::joint == mode) {
@@ -615,14 +652,13 @@ namespace dynamixel {
     bool DynamixelHardwareInterface<Protocol>::_load_urdf(ros::NodeHandle& nh,
         std::string param_name)
     {
-        std::string urdf_string;
         if (_urdf_model == nullptr)
             _urdf_model = std::make_shared<urdf::Model>();
 
         // get the urdf param on param server
-        nh.getParam(param_name, urdf_string);
+        nh.getParam(param_name, _urdf_string);
 
-        return !urdf_string.empty() && _urdf_model->initString(urdf_string);
+        return !_urdf_string.empty() && _urdf_model->initString(_urdf_string);
     }
 
     /** Search for the requested servos
