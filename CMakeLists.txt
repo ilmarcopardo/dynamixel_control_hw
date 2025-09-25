@@ -12,7 +12,6 @@ find_package(catkin REQUIRED COMPONENTS
   message_generation
   hardware_interface
   controller_manager
-  transmission_interface
 )
 
 catkin_package(CATKIN_DEPENDS

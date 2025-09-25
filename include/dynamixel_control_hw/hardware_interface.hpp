@@ -22,8 +22,6 @@
 #include <joint_limits_interface/joint_limits_rosparam.h>
 #include <joint_limits_interface/joint_limits_urdf.h>
 
-#include <transmission_interface/transmission_info.h>
-#include <transmission_interface/transmission_parser.h>
 
 // Library for access to the dynamixels
 #include <dynamixel/dynamixel.hpp>
@@ -133,7 +131,6 @@ namespace dynamixel {
 
         // URDF model of the robot, for joint limits
         std::shared_ptr<urdf::Model> _urdf_model;
-        std::string _urdf_string;
     };
 
     template <class Protocol>
@@ -163,16 +160,6 @@ namespace dynamixel {
         if (!_get_ros_parameters(root_nh, robot_hw_nh) || !_find_servos())
             return false;
 
-        std::vector<transmission_interface::TransmissionInfo> transmissions;
-        if (!_urdf_string.empty())
-        {
-            transmission_interface::TransmissionParser parser;
-            if (!parser.parse(_urdf_string, transmissions))
-            {
-                ROS_WARN("Could not parse transmissions from URDF");
-            }
-        }
-
         // declare all available actuators to the control manager, provided a
         // name has been given for them
         // also enable the torque output on the actuators (sort of power up)
@@ -186,21 +173,20 @@ namespace dynamixel {
                 if (dynamixel_iterator != _dynamixel_map.end()) {
                     _mechanical_reductions[id] = 1.0;
                    
-                   // Find transmission for this joint
-                   for (size_t j = 0; j < transmissions.size(); j)
-                   {
-                       if (transmissions[j].joints_.front().name_ == dynamixel_iterator->second)
-                       {
-                           if (transmissions[j].actuators_.empty()) {
-                               ROS_WARN_STREAM("Transmission " << transmissions[j].name_ << " has no actuators, cannot get mechanical reduction.");
-                               continue;
-                           }
-                           _mechanical_reductions[id] = transmissions[j].actuators_.front().mechanical_reduction_;
-                           ROS_INFO_STREAM("Found mechanical reduction " << _mechanical_reductions[id] << " for joint " << dynamixel_iterator->second);
-                           break; // Stop after finding the first match
-                       }
-                   }
-
+                     if (_urdf_model) {
+                        const std::string& joint_name = dynamixel_iterator->second;
+                        for (auto const& transmission_it : _urdf_model->transmissions_) {
+                            urdf::Transmission* transmission = transmission_it.second.get();
+                            if (transmission->joints_.empty() || transmission->actuators_.empty()) {
+                                continue;
+                            }
+                            if (transmission->joints_[0].name == joint_name) {
+                                _mechanical_reductions[id] = transmission->actuators_[0].mechanical_reduction;
+                                ROS_INFO_STREAM("Found mechanical reduction " << _mechanical_reductions[id] << " for joint " << joint_name);
+                                break; // Stop after finding the first match
+                            }
+                        }
+                    }
 
                     // tell ros_control the in-memory addresses where to read the
                     // information on joint angle, velocity and effort
@@ -652,13 +638,14 @@ namespace dynamixel {
     bool DynamixelHardwareInterface<Protocol>::_load_urdf(ros::NodeHandle& nh,
         std::string param_name)
     {
+        std::string urdf_string;
         if (_urdf_model == nullptr)
             _urdf_model = std::make_shared<urdf::Model>();
 
         // get the urdf param on param server
-        nh.getParam(param_name, _urdf_string);
+        nh.getParam(param_name, urdf_string);
 
-        return !_urdf_string.empty() && _urdf_model->initString(_urdf_string);
+        return !urdf_string.empty() && _urdf_model->initString(urdf_string);
     }
 
     /** Search for the requested servos
