@@ -12,7 +12,7 @@
 // ROS-related: to parse parameters
 #include <XmlRpcException.h>
 #include <XmlRpcValue.h>
-
+#include <tinyxml.h>
 // ROS control
 #include <hardware_interface/joint_command_interface.h>
 #include <hardware_interface/joint_state_interface.h>
@@ -131,6 +131,7 @@ namespace dynamixel {
 
         // URDF model of the robot, for joint limits
         std::shared_ptr<urdf::Model> _urdf_model;
+        std::string _urdf_string;
     };
 
     template <class Protocol>
@@ -160,6 +161,44 @@ namespace dynamixel {
         if (!_get_ros_parameters(root_nh, robot_hw_nh) || !_find_servos())
             return false;
 
+        // Manually parse the URDF for mechanical reduction ratios using TinyXML
+        if (!_urdf_string.empty())
+        {
+            TiXmlDocument doc;
+            doc.Parse(_urdf_string.c_str());
+            TiXmlElement* robot = doc.FirstChildElement("robot");
+            if (robot)
+            {
+                // Loop through all transmission tags
+                for (TiXmlElement* transmission = robot->FirstChildElement("transmission"); transmission; transmission = transmission->NextSiblingElement("transmission"))
+                {
+                    TiXmlElement* joint = transmission->FirstChildElement("joint");
+                    TiXmlElement* actuator = transmission->FirstChildElement("actuator");
+                    if (joint && actuator)
+                    {
+                        const char* joint_name = joint->Attribute("name");
+                        TiXmlElement* reduction_elem = actuator->FirstChildElement("mechanicalReduction");
+                        if (joint_name && reduction_elem && reduction_elem->GetText())
+                        {
+                            try {
+                                // Find the servo ID corresponding to this joint name
+                                for (auto const& map_pair : _dynamixel_map) {
+                                    if (map_pair.second == std::string(joint_name)) {
+                                        double reduction = std::stod(reduction_elem->GetText());
+                                        _mechanical_reductions[map_pair.first] = reduction;
+                                        ROS_INFO_STREAM("Found mechanical reduction " << reduction << " for joint " << joint_name);
+                                        break;
+                                    }
+                                }
+                            } catch(const std::invalid_argument& e) {
+                                ROS_ERROR_STREAM("Could not parse mechanical reduction for joint " << joint_name);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // declare all available actuators to the control manager, provided a
         // name has been given for them
         // also enable the torque output on the actuators (sort of power up)
@@ -171,21 +210,9 @@ namespace dynamixel {
                 typename std::unordered_map<id_t, std::string>::iterator dynamixel_iterator
                     = _dynamixel_map.find(id);
                 if (dynamixel_iterator != _dynamixel_map.end()) {
-                    _mechanical_reductions[id] = 1.0;
-                   
-                     if (_urdf_model) {
-                        const std::string& joint_name = dynamixel_iterator->second;
-                        for (auto const& transmission_it : _urdf_model->transmissions_) {
-                            urdf::Transmission* transmission = transmission_it.second.get();
-                            if (transmission->joints_.empty() || transmission->actuators_.empty()) {
-                                continue;
-                            }
-                            if (transmission->joints_[0].name == joint_name) {
-                                _mechanical_reductions[id] = transmission->actuators_[0].mechanical_reduction;
-                                ROS_INFO_STREAM("Found mechanical reduction " << _mechanical_reductions[id] << " for joint " << joint_name);
-                                break; // Stop after finding the first match
-                            }
-                        }
+                    // Set default reduction of 1.0 if it was not found in the URDF
+                    if (_mechanical_reductions.find(id) == _mechanical_reductions.end()) {
+                        _mechanical_reductions[id] = 1.0;
                     }
 
                     // tell ros_control the in-memory addresses where to read the
@@ -638,14 +665,12 @@ namespace dynamixel {
     bool DynamixelHardwareInterface<Protocol>::_load_urdf(ros::NodeHandle& nh,
         std::string param_name)
     {
-        std::string urdf_string;
         if (_urdf_model == nullptr)
             _urdf_model = std::make_shared<urdf::Model>();
-
-        // get the urdf param on param server
-        nh.getParam(param_name, urdf_string);
-
-        return !urdf_string.empty() && _urdf_model->initString(urdf_string);
+        
+        nh.getParam(param_name, _urdf_string); // This line is important
+        
+        return !_urdf_string.empty() && _urdf_model->initString(_urdf_string);
     }
 
     /** Search for the requested servos
